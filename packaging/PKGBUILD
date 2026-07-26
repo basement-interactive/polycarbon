@@ -46,7 +46,7 @@ optdepends=('bubblewrap: enforce per-app restrictions — without it, Restricted
 checkdepends=('desktop-file-utils')
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('83f9b1778a747489f13e0f2516b57c8d78e8c56038520e6b4a3fd599e5229510')
+sha256sums=('819c81e42dc8181dc26417809863d6137d3458c587493efe4b69dc241aad62b0')
 
 check() {
 	cd "$pkgname-$pkgver"
