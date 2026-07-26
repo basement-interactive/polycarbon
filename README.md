@@ -17,7 +17,9 @@ your app menu.
   verified against the release's own published `sha256sums.txt`.
 - **Sets up one shared prefix silently.** Windows' Documents/Downloads/Desktop
   point straight at your real XDG directories, and your whole home tree is
-  reachable as `H:\`.
+  reachable as `H:\`. Dotfiles and dotfolders stay reachable too — Wine flags
+  them hidden by default, which makes a Windows Open/Save dialog refuse to show
+  `~/.config` and friends with no way to toggle them back on.
 - **Installs the compatibility stack unattended.** wine-mono (.NET), wine-gecko
   (embedded HTML), and — on Vulkan-capable machines — DXVK for Direct3D 8-11 and
   VKD3D-Proton for Direct3D 12. Without Vulkan those two are skipped and the GL
@@ -31,6 +33,13 @@ your app menu.
   your browser reaches the Windows program that registered it, and a document
   whose type only a Windows program knows becomes double-clickable in your file
   manager. Types the Linux desktop already handles are never taken over.
+- **Puts tray programs in your system tray.** Windows programs that live in the
+  tray — Telegram, Everything, Discord — put their icon in your bar like any
+  native app, with a working hover tooltip and click-through. Wine only speaks
+  the old XEmbed tray spec and Wayland bars only speak StatusNotifierItem, so
+  Polycarbon ships the bridge between them; without it Wine parks every icon in a
+  small untitled window of its own. Only programs that genuinely ask Windows for
+  a tray icon get one.
 - **Recovers from crashes by itself.** When a program dies on launch, Polycarbon
   walks a ladder of known Wine quirks — discrete-GPU selection, Direct3D over
   OpenGL, the gamepad-API stub, a Windows 7 version report, CPU rendering — one
@@ -102,6 +111,11 @@ notification and runs the program unrestricted rather than failing silently.
 | `~/.local/share/polycarbon/env` | per-machine tuning, applied to every program |
 | `~/.local/share/polycarbon/perms/` | per-program permissions |
 | `~/.local/share/polycarbon/quirks/` | crash fixes Polycarbon learned per program |
+| `/usr/lib/polycarbon/polycarbon-tray.py` | the XEmbed → StatusNotifierItem tray bridge |
+
+Run the tray bridge with `--probe` to see what it has to work with (display,
+XComposite/XDamage, whether a tray already exists, whether a bar is listening),
+or set `POLYCARBON_TRAY_DEBUG=1` to trace icon capture.
 
 Nothing is written outside your home directory, and nothing needs root.
 

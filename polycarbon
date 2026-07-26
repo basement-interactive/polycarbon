@@ -90,7 +90,7 @@ GECKO_URL="https://dl.winehq.org/wine/wine-gecko/${GECKO_VER}/wine-gecko-${GECKO
 GECKO64_SHA256="e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f"
 GECKO32_SHA256="26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6"
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 SELF=$(realpath -- "$0")
 # Pre-escaped for the Exec= lines of generated .desktop files; a %% or a
@@ -105,12 +105,19 @@ LIBEXEC=$(dirname "$SELF")
 # desktop IDs stay simple and every launcher/menu finds them
 APPS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
 BASE="${XDG_DATA_HOME:-$HOME/.local/share}/polycarbon"
+# State directories polycarbon used before it shipped on its own. Newest legacy
+# name first, so a machine carrying both keeps the one that was actually in use.
+# These are needed twice — once to move the directory, and again to repair the
+# launchers that recorded the old path inside their Exec lines — so the list is
+# declared once rather than spelled out at each site.
+LEGACY_BASES=(
+    "${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/polycarbon"
+    "${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/winrun"
+)
 # Installs from before polycarbon shipped on its own keep their runner, prefix
 # and apps — moved over rather than re-downloading ~95 MB and rebuilding the
-# Windows environment from scratch. Newest legacy name first, so a machine
-# carrying both directories keeps the one that was actually in use.
-for _old in "${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/polycarbon" \
-    "${XDG_DATA_HOME:-$HOME/.local/share}/caelestia/winrun"; do
+# Windows environment from scratch.
+for _old in "${LEGACY_BASES[@]}"; do
     if [ -d "$_old" ] && [ ! -d "$BASE" ]; then
         mkdir -p "$(dirname "$BASE")"
         mv "$_old" "$BASE"
@@ -699,6 +706,39 @@ _quiet_runtime_ui() {
     "$WINE" reg add 'HKCU\Software\Wine\WineDbg' /v ShowCrashDialog /t REG_DWORD /d 0 /f >>"$LOG" 2>&1
 }
 
+# Registry defaults that are wrong for a Windows program running on a Linux
+# desktop. These are per-prefix values, so they are applied against a version
+# marker rather than at prefix creation — prefixes that already exist have to
+# catch up, and every install made before this existed is in exactly that state.
+# Bump the version when the set below changes.
+PREFIX_TWEAKS_VER="2026-07-26b"
+
+apply_prefix_tweaks() {
+    [ "$(cat "$BASE/prefix-tweaks.version" 2>/dev/null)" = "$PREFIX_TWEAKS_VER" ] && return 0
+
+    # Wine's X11 driver asks the window manager to hand focus over via the ICCCM
+    # WM_TAKE_FOCUS handshake (UseTakeFocus, default "Y"). Stacking window
+    # managers answer it; tiling compositors largely do not, and a window Wine
+    # opens WITHOUT taking focus itself is dead to the keyboard and to the
+    # pointer grab a menu depends on. One cause, three symptoms: menus and
+    # dropdowns that dismiss on the frame they open, modal dialogs that cannot
+    # be typed into, and a window summoned from a tray icon coming up behind its
+    # parent. "N" makes Wine take focus itself instead of asking.
+    "$WINE" reg add 'HKCU\Software\Wine\X11 Driver' /v UseTakeFocus /d N /f >>"$LOG" 2>&1 || return 0
+
+    # Wine marks every Unix dotfile FILE_ATTRIBUTE_HIDDEN, and a file dialog
+    # filters hidden entries out — so on Linux, where a dot is the whole of what
+    # "hidden" means, the picker cannot reach ~/.config or any other dotfolder
+    # and there is no in-dialog toggle to reveal them. Measured on wine-staging
+    # 11.14: with this unset a plain `dir` lists none of a directory's dotfiles,
+    # with it "Y" it lists all of them. Only the hidden FLAG changes; nothing is
+    # renamed or moved.
+    "$WINE" reg add 'HKCU\Software\Wine' /v ShowDotFiles /d Y /f >>"$LOG" 2>&1 || return 0
+
+    echo "$PREFIX_TWEAKS_VER" > "$BASE/prefix-tweaks.version"
+    logmsg "prefix tweaks applied: Wine takes focus itself; dotfiles visible in file dialogs"
+}
+
 init_prefix() {
     if [ -f "$WINEPREFIX/system.reg" ]; then
         # Existing prefix, but the runtime just changed under it — migrate the
@@ -893,6 +933,82 @@ else:
 # than guessed from the filename: a run in which DXVK or VKD3D brought up a
 # device is a Direct3D program.
 GAMEWRAP=()
+# --- Windows tray icons ----------------------------------------------------
+# Programs that live in the tray (Telegram, Everything, Discord) are the reason
+# this exists. Wine's explorer.exe speaks only the old XEmbed system-tray spec:
+# it looks for an X selection owner and asks it to adopt the icon window. Wayland
+# bars speak only StatusNotifierItem over D-Bus, and nothing on the distro
+# bridges the two any more, so Wine finds no tray and parks every icon in a
+# ~160x20 untitled window of its own — the sliver that shows up wedged into a
+# tiling layout. polycarbon-tray is that missing bridge; see its header.
+TRAY_HELPER="polycarbon-tray.py"
+
+tray_bridge_running() {
+    pgrep -u "$(id -u)" -f "$TRAY_HELPER" >/dev/null 2>&1
+}
+
+# An adopted icon window says nothing about which program owns it: Wine's tray
+# windows all belong to explorer.exe, so WM_CLASS and _NET_WM_PID name the Wine
+# session and the WM_NAME an XEmbed tray would read a tooltip from is empty.
+# polycarbon is the only part of this that knows, so it leaves the name where the
+# bridge can pick it up when an icon shows up.
+tray_hint() { # label
+    [ -n "${1:-}" ] || return 0
+    printf '%s\n' "$1" > "$BASE/tray.hint" 2>/dev/null || true
+}
+
+# Best-effort and non-blocking: the bridge is worth having but never worth
+# delaying or failing a launch over, so every reason it cannot run is a quiet
+# return. It self-checks for a display and an SNI host and stands down cleanly
+# when either is missing, which is the case tray_park_fallback then covers.
+tray_start() {
+    [ -n "${DISPLAY:-}" ] || return 0
+    command -v python3 >/dev/null 2>&1 || return 0
+    [ -f "$LIBEXEC/$TRAY_HELPER" ] || return 0
+    tray_bridge_running && return 0
+    # The hint path is fixed and its CONTENTS change per launch, because the
+    # bridge outlives any one program and only reads the file when an icon
+    # actually docks.
+    POLYCARBON_TRAY_HINT="$BASE/tray.hint" setsid python3 "$LIBEXEC/$TRAY_HELPER" >>"$LOG" 2>&1 &
+    logmsg "started the tray bridge (XEmbed -> StatusNotifierItem)"
+}
+
+# No SNI host to publish to means Wine's own tray window is what the user gets.
+# It works — the icons in it are real and clickable — it just is not a window,
+# so a tiling compositor should not be treating it as one. Float it and pin it
+# so it behaves like a tray. Hyprland-only and entirely best-effort, the same
+# contract as sync_dpi; on this path a failure costs nothing because the
+# untouched window is exactly the status quo.
+tray_park_fallback() {
+    command -v hyprctl >/dev/null 2>&1 || return 0
+    local i addr
+    for i in $(seq 1 20); do
+        sleep 1
+        # The bridge got there after all: it owns the icons now, and Wine's
+        # strip will not appear. Nothing to park.
+        tray_bridge_running && return 0
+        addr=$(hyprctl clients -j 2>/dev/null | python3 -c '
+import json, sys
+# Wine`s tray strip: explorer.exe, no title, and only a couple of icon rows
+# tall. The /desktop explorer that runs the Wine session has no window at all,
+# so height is what separates the tray from anything else explorer maps.
+try:
+    clients = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for c in clients:
+    if (c.get("class") == "explorer.exe" and not c.get("title")
+            and 0 < (c.get("size") or [0, 0])[1] <= 32):
+        print(c.get("address", ""))
+        break
+' 2>/dev/null)
+        [ -n "$addr" ] || continue
+        hyprctl --batch "dispatch setfloating address:$addr ; dispatch pin address:$addr" >/dev/null 2>&1
+        logmsg "no SNI tray host — floated Wine's own tray window ($addr)"
+        return 0
+    done
+}
+
 game_wrap_setup() { # exe
     GAMEWRAP=()
     command -v gamemoderun >/dev/null 2>&1 || return 0
@@ -920,6 +1036,7 @@ ensure_ready() {
     install_components
     link_filesystem   # cheap + idempotent; also upgrades pre-existing prefixes
     install_bindings
+    apply_prefix_tweaks
     sync_dpi
     flock -u 9
     exec 9>&-
@@ -1313,11 +1430,49 @@ _shortcut_roots() {
         "$WINEPREFIX/drive_c/users/Public/Desktop"
 }
 
+# Root order is load-bearing, so this deliberately does not sort globally: when
+# the same program is reachable from a Start Menu entry and a Desktop entry, the
+# Start Menu one has to be seen first, because that is the one that gets kept.
+# A global `sort -u` ordered by full path instead, which put Public/Desktop ahead
+# of a user profile's own Start Menu. Sorting within each root keeps the result
+# deterministic; awk drops exact repeats without reordering.
 _list_shortcuts() {
     local root
     _shortcut_roots | while IFS= read -r root; do
-        [ -e "$root" ] && find -L "$root" -iname '*.lnk' 2>/dev/null
-    done | sort -u
+        [ -e "$root" ] && find -L "$root" -iname '*.lnk' 2>/dev/null | sort
+    done | awk '!seen[$0]++'
+}
+
+# What a shortcut actually points at, as a comparison key. The whole stored path
+# rather than the basename: two unrelated programs can both ship a Launcher.exe,
+# and collapsing those would hide one of them.
+_shortcut_target() { # lnk-path
+    local hit
+    hit=$( { strings -e l "$1" 2>/dev/null; strings "$1" 2>/dev/null; } \
+        | grep -ioE '([^\\/:*?"<>|]+\\)*[^\\/:*?"<>|]+\.exe' | tail -1)
+    [ -n "$hit" ] || return 1
+    printf '%s' "$hit" | tr '[:upper:]' '[:lower:]' | tr -d '[:cntrl:]'
+}
+
+# The launcher, if any, that already covers this program.
+_launcher_owning_target() { # target-key
+    local f
+    for f in "$APPS_DIR"/polycarbon-*.desktop; do
+        [ -e "$f" ] || continue
+        grep -qxF "X-Polycarbon-Target=$1" "$f" 2>/dev/null && { printf '%s' "$f"; return 0; }
+    done
+    return 1
+}
+
+# The launcher, if any, minted for this exact shortcut file.
+_launcher_for_lnk() { # lnk-path
+    local f want
+    want="Exec=\"$SELF_Q\" \"$(_desktop_exec_quote "$1")\""
+    for f in "$APPS_DIR"/polycarbon-*.desktop; do
+        [ -e "$f" ] || continue
+        grep -qxF "$want" "$f" 2>/dev/null && { printf '%s' "$f"; return 0; }
+    done
+    return 1
 }
 
 # This runtime's winemenubuilder (Proton-style) writes its extracted shortcut
@@ -1388,7 +1543,7 @@ _desktop_exec_quote() { printf '%s' "$1" | sed 's/%/%%/g; s/[\\"`$]/\\&/g'; }
 SELF_Q=$(_desktop_exec_quote "$SELF")
 
 harvest_shortcuts() {
-    local before=$1 lnk name slug dest icon lnk_q added=""
+    local before=$1 lnk name slug dest icon lnk_q added="" target owner stale
     mkdir -p "$APPS_DIR"
     # Get the runtime's extracted icons into the theme first, so the Icon= name
     # each launcher references below actually resolves to a real icon.
@@ -1399,6 +1554,27 @@ harvest_shortcuts() {
         name=$(basename "$lnk" .lnk)
         # Wine's own uninstaller entries are noise, not apps (any case)
         case "${name,,}" in *uninstall*|*remove*) continue ;; esac
+        # One program, several shortcuts. Installers routinely drop the same
+        # program in the Start Menu AND on the Desktop, and the slug collision
+        # check below cannot tell that apart from two different programs sharing
+        # a shortcut name — it compares the .lnk, which genuinely differs. The
+        # target is what settles it. Keep the first shortcut that claimed this
+        # program (Start Menu, per the root order) and drop the rest, including
+        # a duplicate launcher some earlier harvest already minted.
+        target=$(_shortcut_target "$lnk") || target=""
+        if [ -n "$target" ]; then
+            owner=$(_launcher_owning_target "$target") || owner=""
+            if [ -n "$owner" ]; then
+                stale=$(_launcher_for_lnk "$lnk") || stale=""
+                if [ -n "$stale" ] && [ "$stale" != "$owner" ] \
+                    && grep -qxF 'X-Polycarbon=true' "$stale" 2>/dev/null; then
+                    rm -f "$stale"
+                    added=1
+                    logmsg "removed duplicate launcher $(basename "$stale") — same program as $(basename "$owner")"
+                fi
+                continue
+            fi
+        fi
         slug=$(printf '%s' "$name" | tr -cs '[:alnum:]' '-' | tr '[:upper:]' '[:lower:]' | sed 's/^-//;s/-$//')
         # A fully non-ASCII name (CJK etc.) slugs to empty under the C locale;
         # fall back to a short hash of the name so it still gets a launcher.
@@ -1407,7 +1583,7 @@ harvest_shortcuts() {
         # Two different apps can ship a same-named shortcut (Launcher.lnk).
         # If this slug is already taken by a DIFFERENT .lnk, disambiguate with
         # a hash of the full path so the second never overwrites the first.
-        if [ -e "$dest" ] && ! grep -qxF "Exec=\"$SELF\" \"$(_desktop_exec_quote "$lnk")\"" "$dest" 2>/dev/null; then
+        if [ -e "$dest" ] && ! grep -qxF "Exec=\"$SELF_Q\" \"$(_desktop_exec_quote "$lnk")\"" "$dest" 2>/dev/null; then
             slug="$slug-$(printf '%s' "$lnk" | md5sum | cut -c1-6)"
             dest="$APPS_DIR/polycarbon-$slug.desktop"
         fi
@@ -1429,11 +1605,12 @@ harvest_shortcuts() {
 Type=Application
 Name=$name
 Comment=Windows program via Polycarbon
-Exec="$SELF" "$lnk_q"
+Exec="$SELF_Q" "$lnk_q"
 Icon=${icon:-application-x-executable}
 Terminal=false
 Categories=Utility;
 X-Polycarbon=true
+X-Polycarbon-Target=$target
 EOF
         if [ -n "$fresh" ]; then
             notify "$name installed" "Added to your app menu" checkmark
@@ -1746,6 +1923,90 @@ _is_own_handler() { # desktop-id
     return 1
 }
 
+# Handler entries polycarbon shipped while it lived inside the shell. The
+# package installs polycarbon.desktop instead, so these are duplicates that
+# still name a path the install no longer has — every "Open with" list keeps
+# offering them and each one fails.
+LEGACY_HANDLER_IDS="caelestia-polycarbon.desktop caelestia-polycarbon-settings.desktop caelestia-winrun.desktop caelestia-winrun-settings.desktop"
+
+# The program a launcher's Exec line runs, unquoted. polycarbon has shipped
+# both spellings — "quoted path" args, and a bare path — so both parse here.
+_exec_program() { # desktop-file
+    local line
+    line=$(grep -m1 '^Exec=' "$1" 2>/dev/null) || return 1
+    line=${line#Exec=}
+    case $line in
+    '"'*) line=${line#\"}; printf '%s' "${line%%\"*}" ;;
+    *) printf '%s' "${line%% *}" ;;
+    esac
+}
+
+# Rebuild one Exec value against this install: the program becomes $SELF, and a
+# legacy state-dir path anywhere in the arguments becomes the current $BASE.
+# Both halves matter — a harvested launcher passes the .lnk by absolute path
+# INTO the state directory, so moving that directory invalidates the argument
+# even when the program path is already right.
+_rewrite_exec() { # exec-value
+    local rest=$1 old
+    case $rest in
+    '"'*) rest=${rest#\"}; rest=${rest#*\"} ;;
+    *) case $rest in
+        *' '*) rest=" ${rest#* }" ;;
+        *) rest="" ;;
+        esac ;;
+    esac
+    for old in "${LEGACY_BASES[@]}"; do
+        rest=${rest//"$old"/"$BASE"}
+    done
+    printf 'Exec="%s"%s' "$SELF_Q" "$rest"
+}
+
+# Every launcher polycarbon writes hard-codes the absolute path of the
+# polycarbon that created it. That is stable for a package install, but an
+# install that MOVES — the runner leaving the shell it used to ship inside, a
+# checkout replaced by a /usr package — silently invalidates every launcher it
+# ever wrote: the app menu keeps all the entries and each one fails to start,
+# which reads to the user as "all my Windows apps disappeared".
+#
+# Gated on the recorded path rather than a version stamp: what invalidates the
+# launchers is polycarbon moving, so the thing worth comparing is where it now
+# runs from. One file read on the hot path, a rewrite only after an actual move.
+relink_launchers() {
+    local marker="$BASE/.self-path"
+    [ "$(cat "$marker" 2>/dev/null)" = "$SELF" ] && return 0
+
+    local f tmp line changed="" legacy
+    for f in "$APPS_DIR"/polycarbon-*.desktop; do
+        [ -e "$f" ] || continue
+        tmp="$f.relink"
+        while IFS= read -r line || [ -n "$line" ]; do
+            case $line in
+            Exec=*) _rewrite_exec "${line#Exec=}"; printf '\n' ;;
+            *) printf '%s\n' "$line" ;;
+            esac
+        done < "$f" > "$tmp" || { rm -f "$tmp"; continue; }
+        # Only write when the content actually moved, so a no-op pass does not
+        # churn every launcher's mtime and the menu caches keyed on it.
+        if cmp -s "$f" "$tmp"; then
+            rm -f "$tmp"
+        else
+            mv "$tmp" "$f" && changed=1
+            logmsg "relinked launcher $(basename "$f")"
+        fi
+    done
+
+    for legacy in $LEGACY_HANDLER_IDS; do
+        [ -e "$APPS_DIR/$legacy" ] || continue
+        rm -f "$APPS_DIR/$legacy" && changed=1
+        logmsg "removed superseded handler entry $legacy"
+    done
+
+    [ -n "$changed" ] && command -v update-desktop-database >/dev/null \
+        && update-desktop-database "$APPS_DIR" 2>/dev/null
+    printf '%s' "$SELF" > "$marker"
+    return 0
+}
+
 # Prints one "claimed|<type>" / "kept|<type>|<handler>" line per MIME type, so
 # a caller can report exactly what changed.
 register_handler() { # [--force]
@@ -1834,6 +2095,7 @@ USAGE
         SETUP_MODE=1
         new_log
         ensure_ready force
+        relink_launchers
         register_once
         harvest_schemes force
         harvest_file_assocs force
@@ -1937,8 +2199,11 @@ Full log: $LOG" dialog-error
     ensure_ready
     clear_audio_endpoint_cache
 
-    # Make double-clicking a Windows file reach polycarbon from now on. Only
-    # happens once, and only for types no other program has claimed.
+    # Repair launchers left pointing at a previous install location, then make
+    # double-clicking a Windows file reach polycarbon from now on. The relink is
+    # a single file read unless polycarbon has actually moved; the claim happens
+    # once, and only for types no other program has claimed.
+    relink_launchers
     register_once
 
     # Bridge protocols the program registered on a previous run/install BEFORE
@@ -1952,14 +2217,23 @@ Full log: $LOG" dialog-error
     # at once (normal usage — double-clicking two .exe files) don't corrupt
     # each other: shared fixed paths would let one run's snapshot/marker/slice
     # clobber the other's mid-flight. A trap cleans them on any exit.
-    local run=$$ shortcut_watcher="" scheme_watcher=""
-    trap 'rm -f "$BASE/.shortcuts.pre.$run" "$BASE/.launch-marker.$run" "$BASE/.attempt.$run.log" "$BASE/.attempt.$run.log.crash" 2>/dev/null; [ -n "$shortcut_watcher" ] && kill "$shortcut_watcher" 2>/dev/null; [ -n "$scheme_watcher" ] && kill "$scheme_watcher" 2>/dev/null' EXIT
+    local run=$$ shortcut_watcher="" scheme_watcher="" tray_watcher=""
+    trap 'rm -f "$BASE/.shortcuts.pre.$run" "$BASE/.launch-marker.$run" "$BASE/.attempt.$run.log" "$BASE/.attempt.$run.log.crash" 2>/dev/null; [ -n "$shortcut_watcher" ] && kill "$shortcut_watcher" 2>/dev/null; [ -n "$scheme_watcher" ] && kill "$scheme_watcher" 2>/dev/null; [ -n "$tray_watcher" ] && kill "$tray_watcher" 2>/dev/null' EXIT
 
     # A first-ever launch registers its scheme mid-startup; catch that too, from
     # a detached watcher, without blocking the app. Started after the trap is in
     # place so an app that exits inside 8 s doesn't leave it running loose.
     ( sleep 8; harvest_schemes; harvest_file_assocs ) >/dev/null 2>&1 &
     scheme_watcher=$!
+
+    # A tray icon appears seconds into startup, so the bridge has to be listening
+    # before the program runs — Wine decides once, at the moment it first needs a
+    # tray, whether there is one. The fallback watches from a detached shell so
+    # neither path adds latency to the launch.
+    tray_hint "${exe%.*}"
+    tray_start
+    tray_park_fallback >/dev/null 2>&1 &
+    tray_watcher=$!
 
     # Snapshot existing shortcuts so an installer's new ones can be spotted
     local before="$BASE/.shortcuts.pre.$run"
