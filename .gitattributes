@@ -1,0 +1,7 @@
+# Build machinery is not source. Keeping packaging/ out of the release tarball
+# also breaks a circularity: mktarball.sh stamps the archive's own sha256 into
+# packaging/PKGBUILD, so a PKGBUILD shipped *inside* the archive could never
+# hold a checksum that matched it.
+packaging/	export-ignore
+.gitattributes	export-ignore
+.gitignore	export-ignore

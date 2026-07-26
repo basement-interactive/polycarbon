@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Polycarbon
+GenericName=Windows Application Runner
+Comment=Run Windows programs directly, no setup needed
+Exec=polycarbon %f
+Icon=application-x-executable
+Terminal=false
+NoDisplay=true
+MimeType=application/x-msdownload;application/vnd.microsoft.portable-executable;application/x-dosexec;application/x-ms-ne-executable;application/x-msi;application/x-ms-shortcut;application/x-bat;text/vbscript;text/vbscript.encode;text/x-ms-regedit;
