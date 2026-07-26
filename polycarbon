@@ -1736,6 +1736,16 @@ HANDLER_ID="polycarbon.desktop"
 # claiming them binds the handler to a MIME type nothing will ever resolve to.)
 MIME_TYPES="application/x-msdownload application/vnd.microsoft.portable-executable application/x-dosexec application/x-ms-ne-executable application/x-msi application/x-ms-shortcut application/x-bat text/vbscript text/vbscript.encode text/x-ms-regedit"
 
+# An entry polycarbon installed under an older name is not another program
+# owning the type, so it is taken back without needing --force — the same
+# reasoning that migrates the state directory rather than starting over.
+_is_own_handler() { # desktop-id
+    case $1 in
+    "$HANDLER_ID" | caelestia-polycarbon.desktop | caelestia-winrun.desktop) return 0 ;;
+    esac
+    return 1
+}
+
 # Prints one "claimed|<type>" / "kept|<type>|<handler>" line per MIME type, so
 # a caller can report exactly what changed.
 register_handler() { # [--force]
@@ -1752,7 +1762,7 @@ register_handler() { # [--force]
     mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"
     for type in $MIME_TYPES; do
         current=$(xdg-mime query default "$type" 2>/dev/null || true)
-        if [ -z "$current" ] || [ "$current" = "$HANDLER_ID" ] || [ "$force" = "--force" ]; then
+        if [ -z "$current" ] || _is_own_handler "$current" || [ "$force" = "--force" ]; then
             if xdg-mime default "$HANDLER_ID" "$type"; then
                 printf 'claimed|%s\n' "$type"
             else

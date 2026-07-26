@@ -6,36 +6,30 @@ pkgdesc="Double-click Windows programs: self-installing Wine runtime, crash reco
 arch=('any')
 url="https://aur.archlinux.org/packages/polycarbon"
 license=('GPL-3.0-or-later')
-# Every program polycarbon calls by name on a path that is not guarded by a
-# `command -v` test. Members of base are listed rather than assumed, the way
-# mkinitcpio — the same shape of package, a large bash script driving a lot of
-# tools — lists its own. Notable ones: binutils for the strings that reads a
-# .lnk's target out of the binary; xz and zstd for the runtime's .tar.xz and
-# VKD3D-Proton's .tar.zst; python for the prefix-registry, hyprctl-JSON and
-# Windows-command-line parsers; gtk3 + python-gobject for `polycarbon config`.
-# gtk-update-icon-cache is deliberately absent — gtk3 already pulls it in.
+# Programs polycarbon calls unconditionally that base does not already pull in.
+# binutils is the strings that reads a .lnk's target out of the binary; zstd is
+# what `tar --zstd` shells out to for VKD3D-Proton's archive; shared-mime-info
+# owns both the Windows MIME types the handler claims and the globs table that
+# decides whether a Windows file type is already spoken for on the Linux side;
+# python parses the prefix registry, hyprctl's JSON and Windows command lines;
+# gtk3 + python-gobject are `polycarbon config`.
+#
+# Not listed, on purpose: base members (coreutils, findutils, gawk, grep, sed,
+# procps-ng, tar, util-linux, xz) are guaranteed present and only add noise;
+# gtk-update-icon-cache already arrives with gtk3; and everything the runner
+# reaches for behind a `command -v` test is an optdepend below, not a hard one.
 #
 # Wine itself is deliberately NOT a dependency: polycarbon downloads Kron4ek's
 # wine-staging build into the user's home directory and keeps it on the latest
 # release, so a system wine would never be the runtime that actually runs.
 depends=('bash'
          'binutils'
-         'coreutils'
          'curl'
-         'desktop-file-utils'
-         'findutils'
-         'gawk'
-         'grep'
          'gtk3'
-         'procps-ng'
          'python'
          'python-gobject'
-         'sed'
          'shared-mime-info'
-         'tar'
-         'util-linux'
          'xdg-utils'
-         'xz'
          'zstd')
 optdepends=('bubblewrap: enforce per-app restrictions — without it, Restricted programs run with full access'
             'libnotify: progress and failure notifications on the desktop'
@@ -43,7 +37,13 @@ optdepends=('bubblewrap: enforce per-app restrictions — without it, Restricted
             'vulkan-driver: Direct3D 8-12 over Vulkan via DXVK and VKD3D-Proton'
             'gamemode: performance governor for programs that turn out to be games'
             'hyprland: display-scale sync and hang detection from live window state'
+            'desktop-file-utils: refresh the launcher list the moment a Windows installer creates one'
             'google-breakpad: decode a minidump left by a program that crashed internally')
+# desktop-file-validate, for the check() below only. The runtime use of this
+# package is the guarded update-desktop-database call, which is an optdepend:
+# pacman's own hook covers the entries polycarbon *ships*, but not the ones it
+# writes into the user's applications dir while an installer is running.
+checkdepends=('desktop-file-utils')
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz")
 sha256sums=('83f9b1778a747489f13e0f2516b57c8d78e8c56038520e6b4a3fd599e5229510')
