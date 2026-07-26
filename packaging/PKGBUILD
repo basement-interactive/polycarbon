@@ -6,23 +6,36 @@ pkgdesc="Double-click Windows programs: self-installing Wine runtime, crash reco
 arch=('any')
 url="https://aur.archlinux.org/packages/polycarbon"
 license=('GPL-3.0-or-later')
-# Everything polycarbon invokes by name that the base package does not already
-# provide. curl fetches the runtime and its components; binutils' strings reads
-# a .lnk's target out of the binary; zstd is what `tar --zstd` shells out to for
-# the VKD3D-Proton archive; python parses the prefix registry, hyprctl's JSON and
-# Windows-style command lines; gtk3 + python-gobject are `polycarbon config`.
+# Every program polycarbon calls by name on a path that is not guarded by a
+# `command -v` test. Members of base are listed rather than assumed, the way
+# mkinitcpio — the same shape of package, a large bash script driving a lot of
+# tools — lists its own. Notable ones: binutils for the strings that reads a
+# .lnk's target out of the binary; xz and zstd for the runtime's .tar.xz and
+# VKD3D-Proton's .tar.zst; python for the prefix-registry, hyprctl-JSON and
+# Windows-command-line parsers; gtk3 + python-gobject for `polycarbon config`.
+# gtk-update-icon-cache is deliberately absent — gtk3 already pulls it in.
 #
 # Wine itself is deliberately NOT a dependency: polycarbon downloads Kron4ek's
 # wine-staging build into the user's home directory and keeps it on the latest
 # release, so a system wine would never be the runtime that actually runs.
-depends=('binutils'
+depends=('bash'
+         'binutils'
+         'coreutils'
          'curl'
          'desktop-file-utils'
+         'findutils'
+         'gawk'
+         'grep'
          'gtk3'
+         'procps-ng'
          'python'
          'python-gobject'
+         'sed'
          'shared-mime-info'
+         'tar'
+         'util-linux'
          'xdg-utils'
+         'xz'
          'zstd')
 optdepends=('bubblewrap: enforce per-app restrictions — without it, Restricted programs run with full access'
             'libnotify: progress and failure notifications on the desktop'
@@ -33,7 +46,7 @@ optdepends=('bubblewrap: enforce per-app restrictions — without it, Restricted
             'google-breakpad: decode a minidump left by a program that crashed internally')
 install="$pkgname.install"
 source=("$pkgname-$pkgver.tar.gz")
-sha256sums=('22e1234720a911b9682bdb52226654f7db213fe3783838ab90e36c63a7197d2e')
+sha256sums=('83f9b1778a747489f13e0f2516b57c8d78e8c56038520e6b4a3fd599e5229510')
 
 check() {
 	cd "$pkgname-$pkgver"
