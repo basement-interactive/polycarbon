@@ -48,7 +48,7 @@ RUNNER_CHECK_SECONDS=86400
 
 # Bump when anything in the component set below changes; installed prefixes
 # catch up on their next launch
-COMPONENTS_VER="2026-07-28"
+COMPONENTS_VER="2026-07-28b"
 # The winetricks runtime-library layer, tracked separately so its verb set
 # can grow without re-running the heavier component install
 BINDINGS_VER="2026-07-28"
@@ -89,11 +89,18 @@ WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312
 # component as mf), cjkfonts (hundreds of MB, and corefonts already covers Latin
 # text — a CJK user should opt in rather than everyone paying for it), quartz and
 # devenum (they conflict with each other, so neither can be installed unattended
-# alongside the other), and dotnetdesktop6/8. That last one is a real gap —
-# wine-mono covers .NET Framework but NOT the .NET 5+ desktop runtime modern WPF
-# and WinForms apps need — but it is a heavy install with a poor unattended
-# record, so it stays a deliberate omission rather than a silent cost on every
-# first run.
+# alongside the other).
+#
+# dotnetdesktop8 and dotnetdesktop9 ARE in the set above, reversing an earlier
+# judgement that called them too heavy and unreliable to install by default.
+# wine-mono covers .NET Framework, but NOTHING covered the .NET 5+ desktop
+# runtime that modern WPF and WinForms apps need, and .NET does not roll forward
+# across major versions by default — an app built against 8 needs 8 present.
+# Measured in a throwaway prefix rather than assumed: each installs unattended in
+# about 30 seconds, leaves the Windows version alone, leaves wine-mono alone, and
+# the two sit side by side (8.0.12 and 9.0.7 both registered). Neither declares a
+# w_call, so neither drags in anything else — the check that xna40 failed. .NET 6
+# is out of support and left out; add dotnetdesktop6 if something still needs it.
 #
 # COST NOTE: msxml3 is the expensive one. winetricks extracts its 64-bit DLL out
 # of the Windows 7 SP1 package, so that single verb pulls ~904 MB (measured) and
@@ -113,6 +120,26 @@ DXVK_SHA256="9c538924110a7cdef871ca36dee218c0774124374ffdeb38af4b76be55bdf7c2"
 NVAPI_VER="0.9.2"
 NVAPI_URL="https://github.com/jp7677/dxvk-nvapi/releases/download/v${NVAPI_VER}/dxvk-nvapi-v${NVAPI_VER}.tar.gz"
 NVAPI_SHA256="60c284223530d643c446c263f1e1a96c6de7b5ff21796219646da734d97a70d6"
+# The .NET desktop runtime, installed directly rather than through winetricks.
+# Two reasons the verb could not do this job. It installs the x86 runtime only,
+# and modern .NET apps are overwhelmingly x64 — an app built for x64 will not
+# start against an x86-only runtime. And it runs the installer under the
+# prefix's own DLL overrides, which fails outright in any prefix carrying native
+# msxml: the installer needs MSXML2.DOMDocument.3.0, the native msxml3/msxml6
+# this runner installs cannot produce it, and it aborts with status 17. Forcing
+# msxml back to builtin for the duration fixes it — measured on a real prefix,
+# exit 1 in 4s becomes exit 0 in 6s.
+#
+# wine-mono covers .NET FRAMEWORK. Nothing covered .NET 5+, and .NET does not
+# roll forward across major versions by default, so 8 (LTS) and 9 (current) both
+# go in. .NET 6 is out of support and omitted.
+DOTNET_RUNTIMES="8.0.12 9.0.7"
+DOTNET_URL_BASE="https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop"
+DOTNET_SHA_8_0_12_x64="cb51b559f343cb56e23cad2e5af8c4d1701e221a0a2a4116193a2a9375568814"
+DOTNET_SHA_8_0_12_x86="340e30c8611af3800b74f0560f0b6f3feab82ee5cfa3fc0d115b84b08bd5456d"
+DOTNET_SHA_9_0_7_x64="508e14881c88eb98d224fe9438e7f1ff39fb4b45ada7cd4bffc27b41c35d46d5"
+DOTNET_SHA_9_0_7_x86="3e5c3181836cc55e7fc4feb6378bba3d7ed11a322e22e8b4ad91bf9ba7a1a63a"
+
 VKD3D_VER="3.0.1"
 VKD3D_URL="https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v${VKD3D_VER}/vkd3d-proton-${VKD3D_VER}.tar.zst"
 VKD3D_SHA256="3cf2315522af5e43605ef6d3c41dad91387040bf97199934f3f7ab76caaa2f0c"
@@ -1101,6 +1128,35 @@ install_components() {
         "$WINE" msiexec /i "$tmp/gecko32.msi" /qn >>"$LOG" 2>&1 || die "HTML support (32-bit) install failed" "See $LOG"
         _component_mark "gecko-$GECKO_VER"
     fi
+
+    # .NET 5+ desktop runtime, both architectures. See the constants above for
+    # why this does not go through winetricks.
+    local dv arch sha url exe
+    for dv in $DOTNET_RUNTIMES; do
+        if _component_done "dotnet-$dv" \
+            "$WINEPREFIX/drive_c/Program Files/dotnet/shared/Microsoft.WindowsDesktop.App/$dv"; then
+            continue
+        fi
+        say "installing .NET Desktop Runtime $dv..."
+        for arch in x64 x86; do
+            # Indirect lookup: DOTNET_SHA_8_0_12_x64 and friends.
+            eval "sha=\${DOTNET_SHA_${dv//./_}_$arch}"
+            [ -n "$sha" ] || continue
+            exe="windowsdesktop-runtime-$dv-win-$arch.exe"
+            url="$DOTNET_URL_BASE/$dv/$exe"
+            progress_detail ".NET $dv ($arch)"
+            fetch "$url" "$sha" "$tmp/$exe"
+            # msxml forced builtin for the installer only: the native msxml this
+            # runner installs cannot serve MSXML2.DOMDocument.3.0 and the
+            # installer aborts with status 17. Scoped to this command, so the
+            # prefix's own overrides are untouched.
+            WINEDLLOVERRIDES="msxml2,msxml3,msxml4,msxml6=b" \
+                "$WINE" "$tmp/$exe" /quiet >>"$LOG" 2>&1 \
+                || logmsg ".NET $dv ($arch) install returned non-zero — continuing"
+        done
+        "$RUNNER_DIR/bin/wineserver" -w 2>/dev/null
+        _component_mark "dotnet-$dv"
+    done
 
     if vulkan_ok; then
         say "installing DXVK $DXVK_VER (Direct3D 8-11 over Vulkan)..."
