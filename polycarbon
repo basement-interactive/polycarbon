@@ -48,7 +48,7 @@ RUNNER_CHECK_SECONDS=86400
 
 # Bump when anything in the component set below changes; installed prefixes
 # catch up on their next launch
-COMPONENTS_VER="2026-07-28b"
+COMPONENTS_VER="2026-07-28c"
 # The winetricks runtime-library layer, tracked separately so its verb set
 # can grow without re-running the heavier component install
 BINDINGS_VER="2026-07-28"
@@ -131,14 +131,24 @@ NVAPI_SHA256="60c284223530d643c446c263f1e1a96c6de7b5ff21796219646da734d97a70d6"
 # exit 1 in 4s becomes exit 0 in 6s.
 #
 # wine-mono covers .NET FRAMEWORK. Nothing covered .NET 5+, and .NET does not
-# roll forward across major versions by default, so 8 (LTS) and 9 (current) both
-# go in. .NET 6 is out of support and omitted.
-DOTNET_RUNTIMES="8.0.12 9.0.7"
+# roll forward across MAJOR versions by default — an app built against 9 will not
+# start on 10 — so every major an app might target has to be present.
+#
+# Versions checked against Microsoft's release metadata rather than picked from
+# memory: 10 is the current LTS and the only channel still in active support
+# (EOL 2028-11-14); 9 and 8 are both in maintenance and go EOL on 2026-11-10, but
+# plenty of shipping software still targets them. 6 and 7 are already EOL and are
+# left out. Patch levels are the current ones — winetricks pins 9.0.7, eleven
+# patches behind, which is the kind of staleness that looks like "the runtime is
+# missing" when an app wants something newer.
+DOTNET_RUNTIMES="10.0.10 9.0.18 8.0.29"
 DOTNET_URL_BASE="https://builds.dotnet.microsoft.com/dotnet/WindowsDesktop"
-DOTNET_SHA_8_0_12_x64="cb51b559f343cb56e23cad2e5af8c4d1701e221a0a2a4116193a2a9375568814"
-DOTNET_SHA_8_0_12_x86="340e30c8611af3800b74f0560f0b6f3feab82ee5cfa3fc0d115b84b08bd5456d"
-DOTNET_SHA_9_0_7_x64="508e14881c88eb98d224fe9438e7f1ff39fb4b45ada7cd4bffc27b41c35d46d5"
-DOTNET_SHA_9_0_7_x86="3e5c3181836cc55e7fc4feb6378bba3d7ed11a322e22e8b4ad91bf9ba7a1a63a"
+DOTNET_SHA_10_0_10_x64="e82fc901c8f52d716293b2bc0830ce0dd254a06268c457a19e8fc503560a84d1"
+DOTNET_SHA_10_0_10_x86="9c174f8df1624a3c33c4e2bbcf99bb7c7166d1a319a2b624a8b84ae4ec692675"
+DOTNET_SHA_9_0_18_x64="12cd00688fc9f8f5187d25911bf656db61998c264f03eef4022ff2d9321d6982"
+DOTNET_SHA_9_0_18_x86="a90bc401a7838f036a4d615ca7031099b4b950ed6a8f59f59c44150c6ad7d648"
+DOTNET_SHA_8_0_29_x64="c0ffa16efeb7ef3ac8100a6a9d7089d9c2904ee89f1815557a79a91be584f775"
+DOTNET_SHA_8_0_29_x86="f852986af541324f515ab916fdbdce6d038c4506dfeda43af0aed18dce721edd"
 
 VKD3D_VER="3.0.1"
 VKD3D_URL="https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v${VKD3D_VER}/vkd3d-proton-${VKD3D_VER}.tar.zst"
