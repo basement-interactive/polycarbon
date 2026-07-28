@@ -52,6 +52,10 @@ COMPONENTS_VER="2026-07-28"
 # The winetricks runtime-library layer, tracked separately so its verb set
 # can grow without re-running the heavier component install
 BINDINGS_VER="2026-07-28"
+# Ceiling for a single winetricks verb. Generous enough for msxml3, the
+# expensive one at ~904 MB on a slow link, and short enough that a stuck
+# installer does not hold a launch open indefinitely.
+BINDINGS_VERB_TIMEOUT="20m"
 WINETRICKS_VER="20260125"
 WINETRICKS_URL="https://raw.githubusercontent.com/Winetricks/winetricks/${WINETRICKS_VER}/src/winetricks"
 WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b"
@@ -69,6 +73,13 @@ WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312
 # installer is slow and failure-prone), dinput8/xinput/usp10 (builtins are
 # current). Everything listed below is media="download" in the pinned winetricks
 # and declares no conflicts, so the whole set installs unattended.
+#
+# A verb being media="download" and conflict-free is NOT enough on its own: some
+# verbs pull others in with w_call, and that pulls their cost and their failure
+# modes in with them. xna40 was added here and then removed for exactly that —
+# it w_calls dotnet40, whose installer is the slow, hang-prone kind this list is
+# supposed to avoid, and it wedged a launch for minutes with no output. Check
+# `load_<verb>` for w_call before adding anything.
 #
 # Also excluded, checked against the pinned winetricks rather than assumed:
 # dxvk (this installs DXVK from upstream itself — the verb would overwrite those
@@ -89,7 +100,7 @@ WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312
 # leaves it in ~/.cache/winetricks. It earns its place — plenty of older software
 # and installers require MSXML 3 and Wine's builtin isn't always enough — but
 # drop it here if a lean first run matters more. The other 15 total under 200 MB.
-WINETRICKS_VERBS="corefonts tahoma vcrun2022 vcrun2013 vcrun2012 vcrun2010 vcrun2008 vcrun2005 vcrun2003 vcrun6 mfc140 vb6run d3dcompiler_47 d3dcompiler_43 d3dx9 d3dx10 d3dx11_43 d3dx11_42 msxml3 msxml4 msxml6 wsh57 xna40 physx"
+WINETRICKS_VERBS="corefonts tahoma vcrun2022 vcrun2013 vcrun2012 vcrun2010 vcrun2008 vcrun2005 vcrun2003 vcrun6 mfc140 vb6run d3dcompiler_47 d3dcompiler_43 d3dx9 d3dx10 d3dx11_43 d3dx11_42 msxml3 msxml4 msxml6 wsh57 physx"
 DXVK_VER="3.0.2"
 DXVK_URL="https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VER}/dxvk-${DXVK_VER}.tar.gz"
 DXVK_SHA256="9c538924110a7cdef871ca36dee218c0774124374ffdeb38af4b76be55bdf7c2"
@@ -933,11 +944,25 @@ install_bindings() {
     # doesn't take the rest down.
     for verb in $pending; do
         say "  · $verb"
-        if env WINE="$WINE" WINESERVER="$RUNNER_DIR/bin/wineserver" PATH="$RUNNER_DIR/bin:$PATH" \
+        # The per-verb ledger already stops a FAILING verb from blocking a
+        # launch, but a verb that HANGS was a different story: nothing bounded
+        # it, so one stuck installer wedged the launch that triggered it for as
+        # long as it sat there — silently, since winetricks writes nothing while
+        # it waits. A bounded verb that gets killed is simply not written to the
+        # ledger, so it retries on a later setup exactly like a failure does.
+        if timeout --kill-after=30s "$BINDINGS_VERB_TIMEOUT" \
+            env WINE="$WINE" WINESERVER="$RUNNER_DIR/bin/wineserver" PATH="$RUNNER_DIR/bin:$PATH" \
             "$wt" -q --unattended "$verb" >>"$LOG" 2>&1; then
             echo "$verb" >> "$done_file"
         else
-            say "    ($verb skipped — will retry on a later setup)"
+            # 124 is timeout's own "deadline hit", worth distinguishing from a
+            # verb that simply failed.
+            if [ $? -eq 124 ]; then
+                say "    ($verb timed out after $BINDINGS_VERB_TIMEOUT — will retry on a later setup)"
+                logmsg "winetricks verb $verb exceeded $BINDINGS_VERB_TIMEOUT and was stopped"
+            else
+                say "    ($verb skipped — will retry on a later setup)"
+            fi
         fi
     done
     "$RUNNER_DIR/bin/wineserver" -w
@@ -958,6 +983,21 @@ _dll_native() { # dll...
     done
 }
 
+# One version stamp for the whole set meant adding ANY component reinstalled
+# every other one. That is how adding nvapi reinstalled wine-mono over a
+# perfectly good copy, and mono's MSI removing its own predecessor is what put an
+# "application with GUID ... was not found" dialog on screen in the middle of a
+# launch — in a runner whose entire premise is that the plumbing never surfaces.
+# Each component now carries a ledger line keyed by name AND version, so it is
+# reinstalled only when that component actually changed. Same shape as the
+# per-verb ledger install_bindings already keeps.
+_component_done() { # key
+    grep -qxF "$1" "$BASE/components.done" 2>/dev/null
+}
+_component_mark() { # key
+    echo "$1" >> "$BASE/components.done"
+}
+
 install_components() {
     [ "$(cat "$BASE/components.version" 2>/dev/null)" = "$COMPONENTS_VER" ] && return 0
     notify "Installing Windows components" "One-time: .NET, HTML and Direct3D support (~150 MB)…" folder-download
@@ -965,15 +1005,21 @@ install_components() {
     rm -rf "$tmp"
     mkdir -p "$tmp"
 
-    say "installing .NET support..."
-    fetch "$MONO_URL" "$MONO_SHA256" "$tmp/mono.msi"
-    "$WINE" msiexec /i "$tmp/mono.msi" /qn >>"$LOG" 2>&1 || die ".NET support install failed" "See $LOG"
+    if ! _component_done "mono-$MONO_VER"; then
+        say "installing .NET support..."
+        fetch "$MONO_URL" "$MONO_SHA256" "$tmp/mono.msi"
+        "$WINE" msiexec /i "$tmp/mono.msi" /qn >>"$LOG" 2>&1 || die ".NET support install failed" "See $LOG"
+        _component_mark "mono-$MONO_VER"
+    fi
 
-    say "installing embedded HTML support..."
-    fetch "$GECKO_URL-x86_64.msi" "$GECKO64_SHA256" "$tmp/gecko64.msi"
-    fetch "$GECKO_URL-x86.msi" "$GECKO32_SHA256" "$tmp/gecko32.msi"
-    "$WINE" msiexec /i "$tmp/gecko64.msi" /qn >>"$LOG" 2>&1 || die "HTML support install failed" "See $LOG"
-    "$WINE" msiexec /i "$tmp/gecko32.msi" /qn >>"$LOG" 2>&1 || die "HTML support (32-bit) install failed" "See $LOG"
+    if ! _component_done "gecko-$GECKO_VER"; then
+        say "installing embedded HTML support..."
+        fetch "$GECKO_URL-x86_64.msi" "$GECKO64_SHA256" "$tmp/gecko64.msi"
+        fetch "$GECKO_URL-x86.msi" "$GECKO32_SHA256" "$tmp/gecko32.msi"
+        "$WINE" msiexec /i "$tmp/gecko64.msi" /qn >>"$LOG" 2>&1 || die "HTML support install failed" "See $LOG"
+        "$WINE" msiexec /i "$tmp/gecko32.msi" /qn >>"$LOG" 2>&1 || die "HTML support (32-bit) install failed" "See $LOG"
+        _component_mark "gecko-$GECKO_VER"
+    fi
 
     if vulkan_ok; then
         say "installing DXVK $DXVK_VER (Direct3D 8-11 over Vulkan)..."
