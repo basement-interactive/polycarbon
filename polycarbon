@@ -1373,16 +1373,75 @@ for c in clients:
     done
 }
 
-game_wrap_setup() { # exe
-    GAMEWRAP=()
-    command -v gamemoderun >/dev/null 2>&1 || return 0
-    [ -f "$BASE/games/$1" ] || return 0
-    GAMEWRAP=(gamemoderun)
-    logmsg "$1 previously initialised Direct3D — running it under gamemode"
+# --- Is this actually a game? ------------------------------------------------
+# gamemode holds the CPU governor at performance for as long as a program runs.
+# That is right for a game and wrong for everything else, and the old test got it
+# wrong more often than right: it marked any program whose log mentioned a Vulkan
+# device, which on a real machine meant a file-search tool, a mod manager and an
+# installer were all running under gamemode. Chromium initialises Direct3D, so
+# every Electron app tripped it.
+#
+# Negative signals are checked first because they are both cheaper and stronger:
+# an Electron app is not a game no matter what its log says.
+_not_a_game() { # program-dir
+    # Electron ships its application as an asar bundle.
+    [ -e "$1/resources/app.asar" ] && return 0
+    # Chromium's ANGLE runtime with no game marker alongside it.
+    if [ -e "$1/libEGL.dll" ] && [ -e "$1/libGLESv2.dll" ]; then
+        [ -e "$1/UnityPlayer.dll" ] || return 0
+    fi
+    return 1
 }
 
-mark_game() { # exe log-slice
+# Files only a game ships. Checked against the program's own directory, so this
+# works on the FIRST launch — the old marker only appeared after a run had
+# already finished, which meant the one launch that compiles every shader was
+# also the one launch that never got gamemode.
+_game_markers() { # program-dir
+    local d=$1 f
+    for f in steam_api.dll steam_api64.dll UnityPlayer.dll GameAssembly.dll \
+        Engine/Binaries/Win64 .egstore; do
+        [ -e "$d/$f" ] && return 0
+    done
+    # Anything living in a Steam library is a game by construction.
+    case $d in
+    *steamapps/common/* | *SteamLibrary*) return 0 ;;
+    esac
+    return 1
+}
+
+looks_like_game() { # target-path exe
+    local dir
+    dir=$(dirname "$1")
+    # An installer is never a game, whatever it is installing.
+    is_installer "$1" && return 1
+    _not_a_game "$dir" && return 1
+    _game_markers "$dir" && return 0
+    # Fall back to what a previous run observed, which is still the only signal
+    # for a game that ships none of the markers above.
+    [ -f "$BASE/games/$2" ] && return 0
+    return 1
+}
+
+game_wrap_setup() { # target-path exe
+    GAMEWRAP=()
+    command -v gamemoderun >/dev/null 2>&1 || return 0
+    looks_like_game "$1" "$2" || return 0
+    GAMEWRAP=(gamemoderun)
+    logmsg "$2 looks like a game — running it under gamemode"
+}
+
+# Remember a program that turned out to use Direct3D, so a game shipping none of
+# the markers above still gets gamemode next time. Gated on the same negative
+# signals: "it initialised Direct3D" is true of every Electron app and most
+# installers, and on its own it marked a file-search tool, a mod manager and an
+# installer as games.
+mark_game() { # exe log-slice target-path
     command grep -aqE 'Found device: |Game: |vkd3d|VKD3D' "$2" 2>/dev/null || return 0
+    if [ -n "${3:-}" ]; then
+        is_installer "$3" && return 0
+        _not_a_game "$(dirname "$3")" && return 0
+    fi
     mkdir -p "$BASE/games"
     : > "$BASE/games/$1"
     return 0
@@ -2770,7 +2829,7 @@ Full log: $LOG" dialog-error
     # Every launch then builds its confinement from the saved answer.
     ask_first_run "$target"
     confine_setup "$target"
-    game_wrap_setup "$exe"
+    game_wrap_setup "$target" "$exe"
     # Clear leftover instances of THIS program up front, before setup runs:
     # stale copies keep wineserver alive, and the runtime auto-updater defers
     # whenever it sees Wine running — so zombies would block the auto-update
@@ -2917,7 +2976,7 @@ Full log: $LOG" dialog-error
         if [ -z "$failed" ]; then
             # Learn whether this is a Direct3D program, so the next launch gets
             # gamemode without anyone having to configure anything.
-            mark_game "$exe" "$slice"
+            mark_game "$exe" "$slice" "$target"
             # It worked. If a rung fixed it, remember it so next time is clean.
             if [ -n "$step" ]; then
                 printf '%s\n' "$extra" >> "$qf"
