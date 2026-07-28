@@ -48,10 +48,10 @@ RUNNER_CHECK_SECONDS=86400
 
 # Bump when anything in the component set below changes; installed prefixes
 # catch up on their next launch
-COMPONENTS_VER="2026-07-21b"
+COMPONENTS_VER="2026-07-28"
 # The winetricks runtime-library layer, tracked separately so its verb set
 # can grow without re-running the heavier component install
-BINDINGS_VER="2026-07-25"
+BINDINGS_VER="2026-07-28"
 WINETRICKS_VER="20260125"
 WINETRICKS_URL="https://raw.githubusercontent.com/Winetricks/winetricks/${WINETRICKS_VER}/src/winetricks"
 WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312a7b"
@@ -70,15 +70,38 @@ WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312
 # current). Everything listed below is media="download" in the pinned winetricks
 # and declares no conflicts, so the whole set installs unattended.
 #
+# Also excluded, checked against the pinned winetricks rather than assumed:
+# dxvk (this installs DXVK from upstream itself — the verb would overwrite those
+# DLLs with whatever version winetricks pinned), faudio and openal (same reason
+# xact is out: Wine's builtins already implement these, and a native override
+# regresses working audio), wmp9 (Media Player, the same class of destabilising
+# component as mf), cjkfonts (hundreds of MB, and corefonts already covers Latin
+# text — a CJK user should opt in rather than everyone paying for it), quartz and
+# devenum (they conflict with each other, so neither can be installed unattended
+# alongside the other), and dotnetdesktop6/8. That last one is a real gap —
+# wine-mono covers .NET Framework but NOT the .NET 5+ desktop runtime modern WPF
+# and WinForms apps need — but it is a heavy install with a poor unattended
+# record, so it stays a deliberate omission rather than a silent cost on every
+# first run.
+#
 # COST NOTE: msxml3 is the expensive one. winetricks extracts its 64-bit DLL out
 # of the Windows 7 SP1 package, so that single verb pulls ~904 MB (measured) and
 # leaves it in ~/.cache/winetricks. It earns its place — plenty of older software
 # and installers require MSXML 3 and Wine's builtin isn't always enough — but
 # drop it here if a lean first run matters more. The other 15 total under 200 MB.
-WINETRICKS_VERBS="corefonts tahoma vcrun2022 vcrun2013 vcrun2010 vcrun2008 vcrun2005 vcrun6 mfc140 d3dcompiler_47 d3dcompiler_43 d3dx9 d3dx10 d3dx11_43 msxml3 msxml6"
+WINETRICKS_VERBS="corefonts tahoma vcrun2022 vcrun2013 vcrun2012 vcrun2010 vcrun2008 vcrun2005 vcrun2003 vcrun6 mfc140 vb6run d3dcompiler_47 d3dcompiler_43 d3dx9 d3dx10 d3dx11_43 d3dx11_42 msxml3 msxml4 msxml6 wsh57 xna40 physx"
 DXVK_VER="3.0.2"
 DXVK_URL="https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VER}/dxvk-${DXVK_VER}.tar.gz"
 DXVK_SHA256="9c538924110a7cdef871ca36dee218c0774124374ffdeb38af4b76be55bdf7c2"
+# NVIDIA's NVAPI is how Windows games ask for DLSS, Reflex and the driver's own
+# feature queries. Wine ships no implementation, so on NVIDIA hardware those
+# features are simply absent — the game falls back or disables them. dxvk-nvapi
+# implements the parts DXVK can answer. Installed only when an NVIDIA GPU is
+# actually present: the DLLs are inert elsewhere, but a native override for a
+# library the machine cannot back is a trap for whoever debugs the prefix later.
+NVAPI_VER="0.9.2"
+NVAPI_URL="https://github.com/jp7677/dxvk-nvapi/releases/download/v${NVAPI_VER}/dxvk-nvapi-v${NVAPI_VER}.tar.gz"
+NVAPI_SHA256="60c284223530d643c446c263f1e1a96c6de7b5ff21796219646da734d97a70d6"
 VKD3D_VER="3.0.1"
 VKD3D_URL="https://github.com/HansKristian-Work/vkd3d-proton/releases/download/v${VKD3D_VER}/vkd3d-proton-${VKD3D_VER}.tar.zst"
 VKD3D_SHA256="3cf2315522af5e43605ef6d3c41dad91387040bf97199934f3f7ab76caaa2f0c"
@@ -247,6 +270,78 @@ mkdir -p "$CACHE_DIR/dxvk" "$CACHE_DIR/vkd3d" "$CACHE_DIR/mesa"
 export DXVK_STATE_CACHE_PATH="$CACHE_DIR/dxvk"
 export VKD3D_SHADER_CACHE_PATH="$CACHE_DIR/vkd3d"
 export MESA_SHADER_CACHE_DIR="$CACHE_DIR/mesa"
+
+# --- Graphics hardware -------------------------------------------------------
+# Nothing here used to vary by vendor: DXVK and VKD3D went in whenever Vulkan was
+# present and every driver kept its defaults. Those defaults are not equally
+# good. NVIDIA's proprietary driver keeps NO on-disk GL shader cache unless asked
+# for one, so the OpenGL path recompiles every shader on every launch; and on a
+# hybrid NVIDIA laptop a program renders on the integrated GPU unless told
+# otherwise, which is the difference between a playable game and a slideshow.
+#
+# Detection reads PCI vendor ids from /sys/class/drm, which needs no tools and is
+# the same source lspci reads. Connector entries (card1-DP-1) resolve to the same
+# device as their card, so the list is deduplicated rather than filtered.
+GPU_VENDORS=""
+detect_gpus() {
+    local dev id
+    for dev in /sys/class/drm/card*/device/vendor; do
+        [ -r "$dev" ] || continue
+        read -r id < "$dev" 2>/dev/null || continue
+        case $id in
+        0x1002) id=amd ;;
+        0x10de) id=nvidia ;;
+        0x8086) id=intel ;;
+        *) continue ;;
+        esac
+        case " $GPU_VENDORS " in *" $id "*) ;; *) GPU_VENDORS="${GPU_VENDORS:+$GPU_VENDORS }$id" ;; esac
+    done
+}
+
+# Every export here is a default, not a decision: POLY_ENV is sourced afterwards
+# and overrides anything below, and the recovery ladder can still override that.
+apply_gpu_tuning() {
+    detect_gpus
+    [ -n "$GPU_VENDORS" ] || return 0
+    local has_nvidia="" has_mesa=""
+    case " $GPU_VENDORS " in *" nvidia "*) has_nvidia=1 ;; esac
+    case " $GPU_VENDORS " in *" amd "* | *" intel "*) has_mesa=1 ;; esac
+
+    if [ -n "$has_nvidia" ]; then
+        # Off by default in the proprietary driver. Without it nothing about the
+        # OpenGL path is cached between runs.
+        mkdir -p "$CACHE_DIR/nvidia"
+        export __GL_SHADER_DISK_CACHE=1
+        export __GL_SHADER_DISK_CACHE_PATH="$CACHE_DIR/nvidia"
+        # The driver prunes this cache aggressively enough that a large game can
+        # evict its own shaders mid-session and recompile them again next launch.
+        export __GL_SHADER_DISK_CACHE_SKIP_CLEANUP=1
+
+        # DXVK hides the NVIDIA vendor id from games unless this is set, which
+        # is what makes a game decide DLSS and Reflex are unavailable. Harmless
+        # when the nvapi DLLs are absent — the queries simply fail as before.
+        export DXVK_ENABLE_NVAPI=1
+
+        # Hybrid only. On an Optimus laptop these are what actually move
+        # rendering onto the discrete card; DRI_PRIME does not apply to the
+        # proprietary driver. On a desktop with only NVIDIA cards they would be
+        # a no-op, so they are not set there — a no-op that shows up in the
+        # environment is a red herring for whoever debugs this next.
+        if [ -n "$has_mesa" ]; then
+            export __NV_PRIME_RENDER_OFFLOAD=1
+            export __GLX_VENDOR_LIBRARY_NAME=nvidia
+            export __VK_LAYER_NV_optimus=NVIDIA_only
+        fi
+    fi
+
+    if [ -n "$has_mesa" ]; then
+        # Moves GL command submission off the app's thread. Mesa-only, and a
+        # straightforward win for the OpenGL fallback path that wined3d uses when
+        # DXVK is off or unavailable.
+        export mesa_glthread=true
+    fi
+}
+apply_gpu_tuning
 
 # Per-machine tuning hook. Anything exported in this file applies to every
 # program and can override the defaults above — the escape hatch for hardware
@@ -711,7 +806,7 @@ _quiet_runtime_ui() {
 # marker rather than at prefix creation — prefixes that already exist have to
 # catch up, and every install made before this existed is in exactly that state.
 # Bump the version when the set below changes.
-PREFIX_TWEAKS_VER="2026-07-26b"
+PREFIX_TWEAKS_VER="2026-07-28c"
 
 apply_prefix_tweaks() {
     [ "$(cat "$BASE/prefix-tweaks.version" 2>/dev/null)" = "$PREFIX_TWEAKS_VER" ] && return 0
@@ -735,8 +830,18 @@ apply_prefix_tweaks() {
     # renamed or moved.
     "$WINE" reg add 'HKCU\Software\Wine' /v ShowDotFiles /d Y /f >>"$LOG" 2>&1 || return 0
 
+    # A link or mailto: from a Windows program goes through winebrowser, which
+    # walks the list in this key. Verified against this build: the compiled-in
+    # default already starts with xdg-open, so the Linux default browser wins —
+    # but only while the key stays UNSET. Anything that writes it takes over
+    # every link from every Windows program, and a Windows browser's installer
+    # writing itself in there is exactly the case that happens silently. Pinning
+    # the value keeps the Linux desktop the owner of links and mail.
+    "$WINE" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /d xdg-open /f >>"$LOG" 2>&1 || return 0
+    "$WINE" reg add 'HKCU\Software\Wine\WineBrowser' /v Mailers /d xdg-open /f >>"$LOG" 2>&1 || return 0
+
     echo "$PREFIX_TWEAKS_VER" > "$BASE/prefix-tweaks.version"
-    logmsg "prefix tweaks applied: Wine takes focus itself; dotfiles visible in file dialogs"
+    logmsg "prefix tweaks applied: focus, dotfiles in file dialogs, links open on the Linux desktop"
 }
 
 init_prefix() {
@@ -887,6 +992,27 @@ install_components() {
         cp "$tmp/vkd3d-proton-$VKD3D_VER/x64/"*.dll "$WINEPREFIX/drive_c/windows/system32/" || die "VKD3D install failed" "See $LOG"
         cp "$tmp/vkd3d-proton-$VKD3D_VER/x86/"*.dll "$WINEPREFIX/drive_c/windows/syswow64/" || die "VKD3D install failed" "See $LOG"
         _dll_native d3d12 d3d12core
+
+        # NVAPI only means anything on NVIDIA hardware, and only alongside DXVK
+        # — it answers through it. detect_gpus ran at startup.
+        case " $GPU_VENDORS " in
+        *" nvidia "*)
+            say "installing dxvk-nvapi $NVAPI_VER (DLSS and Reflex on NVIDIA)..."
+            fetch "$NVAPI_URL" "$NVAPI_SHA256" "$tmp/nvapi.tar.gz"
+            mkdir -p "$tmp/nvapi"
+            tar -xzf "$tmp/nvapi.tar.gz" -C "$tmp/nvapi" || die "NVAPI unpack failed" "See $LOG"
+            # nvapi64-tests.exe ships in the same directory and is not a library;
+            # copy the DLLs by name rather than globbing the whole folder.
+            cp "$tmp/nvapi/x64/nvapi64.dll" "$WINEPREFIX/drive_c/windows/system32/" \
+                || die "NVAPI install failed" "See $LOG"
+            cp "$tmp/nvapi/x32/nvapi.dll" "$WINEPREFIX/drive_c/windows/syswow64/" \
+                || die "NVAPI install failed" "See $LOG"
+            # Optical-flow, used by DLSS frame generation. Present only in x64.
+            [ -f "$tmp/nvapi/x64/nvofapi64.dll" ] \
+                && cp "$tmp/nvapi/x64/nvofapi64.dll" "$WINEPREFIX/drive_c/windows/system32/"
+            _dll_native nvapi nvapi64 nvofapi64
+            ;;
+        esac
     else
         say "no Vulkan driver found - skipping DXVK/VKD3D, Direct3D runs on OpenGL"
     fi
@@ -1540,6 +1666,11 @@ _settle_shortcuts() {
 # shortcut with a % in its name failed to match itself and got a duplicate
 # launcher minted on every harvest.
 _desktop_exec_quote() { printf '%s' "$1" | sed 's/%/%%/g; s/[\\"`$]/\\&/g'; }
+
+# Single-quote a string for embedding in a generated /bin/sh script. A literal
+# quote is closed, escaped and reopened, which is the only form that survives
+# inside single quotes.
+_shell_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 SELF_Q=$(_desktop_exec_quote "$SELF")
 
 harvest_shortcuts() {
@@ -2087,6 +2218,131 @@ register_once() {
     return 0
 }
 
+# --- Steam compatibility tool ------------------------------------------------
+# Steam picks up "compatibility tools" from compatibilitytools.d and lists them
+# beside Proton. A tool is a directory with two vdf files and an executable Steam
+# calls as `<exe> <verb> <command...>`; version 2 of the manifest is what makes
+# Steam pass %verb% at all.
+#
+# The prefix is polycarbon's shared one, NOT the per-app directory Steam hands
+# over in STEAM_COMPAT_DATA_PATH. That is a deliberate choice: a Steam game then
+# runs in exactly the environment polycarbon already provisions — the same
+# runtime, .NET, VC++ runtimes, fonts, DXVK and GPU tuning as every desktop
+# program — instead of a bare prefix Steam would have to build up per game. The
+# trade is that Steam's own per-game prefix controls stop meaning anything,
+# since there is one prefix behind all of them.
+STEAM_TOOL_NAME="polycarbon"
+
+_steam_root() {
+    local d
+    for d in "${XDG_DATA_HOME:-$HOME/.local/share}/Steam" "$HOME/.steam/steam" "$HOME/.steam/root"; do
+        [ -d "$d" ] && { printf '%s' "$d"; return 0; }
+    done
+    return 1
+}
+
+# Written on every launch rather than once: the shim hard-codes the path to this
+# script, so it has to be rewritten whenever polycarbon moves — the same problem
+# relink_launchers solves for the app menu.
+install_steam_tool() {
+    local root dir
+    root=$(_steam_root) || return 0
+    dir="$root/compatibilitytools.d/$STEAM_TOOL_NAME"
+    mkdir -p "$dir" 2>/dev/null || return 0
+
+    local tmp="$dir/.polycarbon-steam.new"
+    cat > "$tmp" <<EOF
+#!/bin/sh
+# Generated by polycarbon — rewritten on each launch, do not edit.
+# Steam calls: polycarbon-steam <verb> <command...>
+POLYCARBON=$(_shell_quote "$SELF")
+verb=\$1
+[ \$# -gt 0 ] && shift
+case "\$verb" in
+getcompatpath | getnativepath)
+    exec "\$POLYCARBON" --steam-path "\$verb" "\$@"
+    ;;
+*)
+    # run, waitforexitandrun, and anything Steam adds later: launch it.
+    exec "\$POLYCARBON" --steam-run "\$@"
+    ;;
+esac
+EOF
+    chmod +x "$tmp" 2>/dev/null
+    if cmp -s "$tmp" "$dir/polycarbon-steam"; then
+        rm -f "$tmp"
+    else
+        mv "$tmp" "$dir/polycarbon-steam" || { rm -f "$tmp"; return 0; }
+        logmsg "installed the Steam compatibility tool into $dir"
+    fi
+
+    # install_path "." means "this directory". The display name is what appears
+    # in Steam's compatibility dropdown.
+    cat > "$dir/compatibilitytool.vdf" <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$STEAM_TOOL_NAME"
+    {
+      "install_path" "."
+      "display_name" "Polycarbon $VERSION"
+      "from_oslist"  "windows"
+      "to_oslist"    "linux"
+    }
+  }
+}
+EOF
+    # use_sessions lets Steam keep one wineserver session across the launcher and
+    # the game it spawns, which is what stops a game that re-execs itself from
+    # being treated as having exited.
+    cat > "$dir/toolmanifest.vdf" <<'EOF'
+"manifest"
+{
+  "version" "2"
+  "commandline" "/polycarbon-steam %verb%"
+  "use_sessions" "1"
+}
+EOF
+    return 0
+}
+
+# Path translation Steam asks for when it needs to hand a path across the
+# Windows/Linux boundary.
+steam_path() { # getcompatpath|getnativepath path
+    local verb=$1
+    shift
+    [ $# -gt 0 ] || return 0
+    case $verb in
+    getcompatpath) "$WINE" winepath -w "$1" 2>/dev/null ;;
+    getnativepath) "$WINE" winepath -u "$1" 2>/dev/null ;;
+    esac
+}
+
+# Run a Steam game. Deliberately NOT the desktop launch path: Steam owns the
+# process lifecycle and treats this process exiting as the game exiting, so the
+# watchdog, the recovery ladder and shortcut harvesting are all wrong here — a
+# recovery relaunch would show up in Steam as the game quitting and a different
+# one starting, and the "still running" overlay would never clear.
+steam_run() {
+    [ $# -gt 0 ] || die "Nothing to run" "Steam did not pass a command to polycarbon"
+    new_log
+    logmsg "steam: $* [sync: $(sync_backend)]"
+    ensure_ready
+
+    # Steam games are games: if gamemode is installed, always use it here rather
+    # than waiting for the Direct3D heuristic the desktop path relies on.
+    local -a wrap=()
+    command -v gamemoderun >/dev/null 2>&1 && wrap=(gamemoderun)
+
+    # Run from the game's own directory — plenty of games load data by relative
+    # path and Steam does the same.
+    [ -n "${STEAM_COMPAT_INSTALL_PATH:-}" ] && [ -d "$STEAM_COMPAT_INSTALL_PATH" ] \
+        && cd "$STEAM_COMPAT_INSTALL_PATH"
+
+    exec "${wrap[@]}" "$WINE" "$@"
+}
+
 main() {
     # Without this, an unknown flag fell through to the launch path and was
     # treated as a filename to run.
@@ -2105,6 +2361,11 @@ polycarbon $VERSION — run Windows programs on Linux
   polycarbon --file <path>      open a file with the program that registered its type
   polycarbon --version          print the version
 
+Steam:
+  Polycarbon installs itself as a Steam compatibility tool, so it appears in
+  a game's Compatibility dropdown next to Proton. Steam games run in the same
+  shared prefix as your desktop programs, with the same runtime and components.
+
 Log:                $LOG
 Per-machine tuning: $POLY_ENV
 USAGE
@@ -2112,6 +2373,15 @@ USAGE
         ;;
     -V | --version | version)
         echo "polycarbon $VERSION"
+        exit 0
+        ;;
+    --steam-run)
+        shift
+        steam_run "$@"
+        ;;
+    --steam-path)
+        shift
+        steam_path "$@"
         exit 0
         ;;
     --register)
@@ -2135,6 +2405,7 @@ USAGE
         ensure_ready force
         relink_launchers
         install_source_entries
+        install_steam_tool
         register_once
         harvest_schemes force
         harvest_file_assocs force
@@ -2244,6 +2515,7 @@ Full log: $LOG" dialog-error
     # once, and only for types no other program has claimed.
     relink_launchers
     install_source_entries
+    install_steam_tool
     register_once
 
     # Bridge protocols the program registered on a previous run/install BEFORE
