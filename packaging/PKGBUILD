@@ -1,6 +1,6 @@
 # Maintainer: vermin <vermin.gov@proton.me>
 pkgname=polycarbon
-pkgver=1.0.1
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Double-click Windows programs: self-installing Wine runtime, crash recovery and per-app sandboxing"
 arch=('any')

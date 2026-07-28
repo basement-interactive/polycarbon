@@ -40,6 +40,20 @@ your app menu.
   Polycarbon ships the bridge between them; without it Wine parks every icon in a
   small untitled window of its own. Only programs that genuinely ask Windows for
   a tray icon get one.
+- **Plays games properly.** Direct3D 8-12 over Vulkan, ntsync for the
+  synchronisation Wine used to need esync/fsync patches for, per-vendor GPU
+  tuning, and DLSS and Reflex on NVIDIA through dxvk-nvapi. Programs that are
+  actually games are recognised from what they ship — the Steam API, a Unity or
+  Unreal runtime — so they run under gamemode from the first launch rather than
+  the second, and programs that merely draw with Direct3D are left alone.
+- **Runs Steam games too.** Polycarbon appears in a game's Compatibility
+  dropdown next to Proton. Steam games run in the same environment as everything
+  else, with the same runtime, components and tuning already in place.
+- **Ships the .NET runtimes.** wine-mono covers .NET Framework; Polycarbon adds
+  the .NET Desktop Runtime that modern WPF and WinForms apps need — 8, 9 and 10,
+  both architectures, because .NET does not roll forward across major versions.
+- **Says what it is doing.** First-time setup downloads a lot; a window shows
+  which component is installing rather than leaving a program to look hung.
 - **Recovers from crashes by itself.** When a program dies on launch, Polycarbon
   walks a ladder of known Wine quirks — discrete-GPU selection, Direct3D over
   OpenGL, the gamepad-API stub, a Windows 7 version report, CPU rendering — one
@@ -67,6 +81,19 @@ hijacked. To claim them explicitly, or to take them over anyway:
 polycarbon --register          # claim only unowned types
 polycarbon --register --force  # take over the rest as well
 ```
+
+## When a program will not close
+
+Killing the launcher does not stop the program: the launcher is a shell script
+and the Windows process belongs to a Wine session that outlives it.
+
+```sh
+polycarbon tasks
+```
+
+lists what is actually running, with memory and uptime, and can end one program
+or stop the whole Windows session — the latter being the thing that clears a
+prefix whose background processes are wedged.
 
 ### Running from a checkout
 
@@ -99,6 +126,7 @@ sudo systemctl restart systemd-binfmt
 ```
 polycarbon <file> [args...]   run a .exe .msi .lnk .bat .cmd .vbs .reg
 polycarbon config             open the per-app permission manager
+polycarbon tasks              see what is running, and stop it
 polycarbon --setup            install/update the runtime, then exit
 polycarbon --register [-f]    become the default handler for Windows file types
 polycarbon --url <uri>        open a link with the program that registered it

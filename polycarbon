@@ -170,7 +170,7 @@ GECKO_URL="https://dl.winehq.org/wine/wine-gecko/${GECKO_VER}/wine-gecko-${GECKO
 GECKO64_SHA256="e590b7d988a32d6aa4cf1d8aa3aa3d33766fdd4cf4c89c2dcc2095ecb28d066f"
 GECKO32_SHA256="26cecc47706b091908f7f814bddb074c61beb8063318e9efc5a7f789857793d6"
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 
 SELF=$(realpath -- "$0")
 # Pre-escaped for the Exec= lines of generated .desktop files; a %% or a
