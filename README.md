@@ -68,6 +68,32 @@ polycarbon --register          # claim only unowned types
 polycarbon --register --force  # take over the rest as well
 ```
 
+### Running from a checkout
+
+Polycarbon runs from a source tree with no install step — useful if you want to
+track the tip rather than a release:
+
+```sh
+git clone https://github.com/basement-interactive/polycarbon
+ln -s "$PWD/polycarbon/polycarbon" ~/.local/bin/polycarbon
+```
+
+It finds its own settings GUI and tray bridge next to the script, and installs
+its desktop entries into `~/.local/share/applications` on the first run so file
+associations resolve. Those entries invoke `polycarbon` by name rather than by
+path, so nothing is pinned to the checkout — if you later install the package,
+the same entries follow `/usr/bin/polycarbon` instead. A package install is
+detected and never shadowed.
+
+Direct `./program.exe` execution is the one piece that needs root, because
+binfmt_misc is system-wide — point it at wherever the script actually lives:
+
+```sh
+printf ':polycarbon:M::MZ::%s:\n' "$(command -v polycarbon)" \
+    | sudo tee /etc/binfmt.d/zz-polycarbon.conf
+sudo systemctl restart systemd-binfmt
+```
+
 ## Usage
 
 ```

@@ -1978,6 +1978,14 @@ relink_launchers() {
     local f tmp line changed="" legacy
     for f in "$APPS_DIR"/polycarbon-*.desktop; do
         [ -e "$f" ] || continue
+        # An entry whose Exec calls `polycarbon` by NAME is already independent
+        # of where polycarbon lives and needs no repair — polycarbon-config
+        # .desktop is one, and it matches this glob. Rewriting it would pin a
+        # checkout path into the one file deliberately written to survive a move.
+        case "$(_exec_program "$f")" in
+        /*) ;;
+        *) continue ;;
+        esac
         tmp="$f.relink"
         while IFS= read -r line || [ -n "$line" ]; do
             case $line in
@@ -2035,6 +2043,36 @@ register_handler() { # [--force]
         fi
     done
     [ -z "$failed" ]
+}
+
+# A package install drops polycarbon.desktop and polycarbon-config.desktop into
+# /usr/share/applications. A source checkout has no install step, so nothing puts
+# them anywhere — and register_once then claims every Windows MIME type for a
+# desktop id that does not exist. The claim looks like it worked and every
+# double-click silently fails, which is precisely the state running from a
+# checkout used to leave behind.
+#
+# Both entries call `polycarbon` by NAME rather than by path, so one copy works
+# whether that resolves to a checkout on $PATH or to /usr/bin — which is also why
+# installing them here cannot strand anyone who later switches to the package.
+install_source_entries() {
+    # A package install already ships these system-wide; never shadow it.
+    [ "$LIBEXEC" = "/usr/lib/polycarbon" ] && return 0
+    local name src dest changed=""
+    for name in "$HANDLER_ID" polycarbon-config.desktop; do
+        src="$LIBEXEC/$name"
+        [ -f "$src" ] || continue
+        [ -f "/usr/share/applications/$name" ] && continue
+        dest="$APPS_DIR/$name"
+        cmp -s "$src" "$dest" && continue
+        mkdir -p "$APPS_DIR"
+        cp "$src" "$dest" || continue
+        changed=1
+        logmsg "installed $name from this checkout"
+    done
+    [ -n "$changed" ] && command -v update-desktop-database >/dev/null \
+        && update-desktop-database "$APPS_DIR" 2>/dev/null
+    return 0
 }
 
 # First ever run: claim the Windows file types nothing else handles, so that
@@ -2096,6 +2134,7 @@ USAGE
         new_log
         ensure_ready force
         relink_launchers
+        install_source_entries
         register_once
         harvest_schemes force
         harvest_file_assocs force
@@ -2204,6 +2243,7 @@ Full log: $LOG" dialog-error
     # a single file read unless polycarbon has actually moved; the claim happens
     # once, and only for types no other program has claimed.
     relink_launchers
+    install_source_entries
     register_once
 
     # Bridge protocols the program registered on a previous run/install BEFORE
