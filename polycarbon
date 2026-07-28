@@ -2614,6 +2614,7 @@ polycarbon $VERSION — run Windows programs on Linux
 
   polycarbon <file> [args...]   run a .exe .msi .lnk .bat .cmd .vbs .reg
   polycarbon config             open the per-app permission manager
+  polycarbon tasks              see what is running, and stop it
   polycarbon --setup            install/update the runtime, then exit
   polycarbon --register [-f]    make polycarbon the default handler for
                                 Windows file types (-f/--force also takes
@@ -2656,6 +2657,14 @@ USAGE
     # Permission manager GUI: `polycarbon config` in a terminal
     if [ "$1" = "config" ] || [ "$1" = "--config" ]; then
         exec python3 "$LIBEXEC/polycarbon-config.py"
+    fi
+
+    # Task manager: what is running, and how to stop it. Killing the launcher
+    # does not stop the program — the Windows process belongs to a Wine session
+    # that outlives the shell that started it — so there has to be something
+    # that ends the right process.
+    if [ "$1" = "tasks" ] || [ "$1" = "--tasks" ]; then
+        exec python3 "$LIBEXEC/polycarbon-tasks.py"
     fi
 
     # System-scan fix path: full setup now, run nothing. Forces the runtime

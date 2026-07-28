@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Polycarbon Tasks
+GenericName=Running Windows Programs
+Comment=See which Windows programs are running and stop ones that will not close
+Exec=polycarbon tasks
+Icon=utilities-system-monitor
+Terminal=false
+Categories=System;Monitor;
+Keywords=windows;wine;task;process;kill;stop;

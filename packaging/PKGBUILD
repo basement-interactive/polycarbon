@@ -58,7 +58,8 @@ check() {
 	python -m py_compile polycarbon-config.py
 	python -m py_compile polycarbon-tray.py
 	python -m py_compile polycarbon-progress.py
-	desktop-file-validate polycarbon.desktop polycarbon-config.desktop
+	python -m py_compile polycarbon-tasks.py
+	desktop-file-validate polycarbon.desktop polycarbon-config.desktop polycarbon-tasks.desktop
 }
 
 package() {
@@ -71,6 +72,7 @@ package() {
 	install -Dm755 polycarbon-config.py "$pkgdir/usr/lib/$pkgname/polycarbon-config.py"
 	install -Dm755 polycarbon-tray.py "$pkgdir/usr/lib/$pkgname/polycarbon-tray.py"
 	install -Dm755 polycarbon-progress.py "$pkgdir/usr/lib/$pkgname/polycarbon-progress.py"
+	install -Dm755 polycarbon-tasks.py "$pkgdir/usr/lib/$pkgname/polycarbon-tasks.py"
 
 	# The MIME handler entry is NoDisplay; the settings entry is the visible one.
 	# Neither is followed by an update-desktop-database or update-mime-database
@@ -78,6 +80,7 @@ package() {
 	# exactly that, and repeating the work in an install script is redundant.
 	install -Dm644 polycarbon.desktop "$pkgdir/usr/share/applications/polycarbon.desktop"
 	install -Dm644 polycarbon-config.desktop "$pkgdir/usr/share/applications/polycarbon-config.desktop"
+	install -Dm644 polycarbon-tasks.desktop "$pkgdir/usr/share/applications/polycarbon-tasks.desktop"
 
 	install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 	install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
