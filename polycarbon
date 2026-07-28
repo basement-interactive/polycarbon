@@ -817,7 +817,7 @@ _quiet_runtime_ui() {
 # marker rather than at prefix creation — prefixes that already exist have to
 # catch up, and every install made before this existed is in exactly that state.
 # Bump the version when the set below changes.
-PREFIX_TWEAKS_VER="2026-07-28c"
+PREFIX_TWEAKS_VER="2026-07-28d"
 
 apply_prefix_tweaks() {
     [ "$(cat "$BASE/prefix-tweaks.version" 2>/dev/null)" = "$PREFIX_TWEAKS_VER" ] && return 0
@@ -850,6 +850,18 @@ apply_prefix_tweaks() {
     # the value keeps the Linux desktop the owner of links and mail.
     "$WINE" reg add 'HKCU\Software\Wine\WineBrowser' /v Browsers /d xdg-open /f >>"$LOG" 2>&1 || return 0
     "$WINE" reg add 'HKCU\Software\Wine\WineBrowser' /v Mailers /d xdg-open /f >>"$LOG" 2>&1 || return 0
+
+    # Report Windows 11. Left unset, the prefix reports whatever Wine defaults to
+    # — and worse, whatever last wrote the HKLM version keys: winetricks' dotnet
+    # verbs set the prefix to Windows XP for their installers, and a run that
+    # dies before restoring it leaves every program afterwards seeing XP. Pinning
+    # the value here makes it a property of the prefix rather than a side effect
+    # of the last thing that touched it. HKCU\Software\Wine\Version takes
+    # precedence over those HKLM keys, so this also repairs a prefix already left
+    # on the wrong version. Verified against this build's winecfg, which accepts
+    # win11. The recovery ladder's per-app AppDefaults override still wins for a
+    # program that genuinely needs an older version.
+    "$WINE" reg add 'HKCU\Software\Wine' /v Version /d win11 /f >>"$LOG" 2>&1 || return 0
 
     echo "$PREFIX_TWEAKS_VER" > "$BASE/prefix-tweaks.version"
     logmsg "prefix tweaks applied: focus, dotfiles in file dialogs, links open on the Linux desktop"
@@ -991,8 +1003,15 @@ _dll_native() { # dll...
 # Each component now carries a ledger line keyed by name AND version, so it is
 # reinstalled only when that component actually changed. Same shape as the
 # per-verb ledger install_bindings already keeps.
-_component_done() { # key
-    grep -qxF "$1" "$BASE/components.done" 2>/dev/null
+_component_done() { # key [artifact-path]
+    grep -qxF "$1" "$BASE/components.done" 2>/dev/null || return 1
+    # A ledger line records that polycarbon installed it — not that it is still
+    # there. winetricks' dotnet verbs REMOVE wine-mono outright as a prerequisite
+    # (remove_mono), so a prefix can silently lose a component long after it was
+    # recorded, and the ledger then vouches for something that is gone. When an
+    # artifact path is given, it has to exist too.
+    [ $# -lt 2 ] || [ -e "$2" ] || return 1
+    return 0
 }
 _component_mark() { # key
     echo "$1" >> "$BASE/components.done"
@@ -1005,14 +1024,14 @@ install_components() {
     rm -rf "$tmp"
     mkdir -p "$tmp"
 
-    if ! _component_done "mono-$MONO_VER"; then
+    if ! _component_done "mono-$MONO_VER" "$WINEPREFIX/drive_c/windows/mono"; then
         say "installing .NET support..."
         fetch "$MONO_URL" "$MONO_SHA256" "$tmp/mono.msi"
         "$WINE" msiexec /i "$tmp/mono.msi" /qn >>"$LOG" 2>&1 || die ".NET support install failed" "See $LOG"
         _component_mark "mono-$MONO_VER"
     fi
 
-    if ! _component_done "gecko-$GECKO_VER"; then
+    if ! _component_done "gecko-$GECKO_VER" "$WINEPREFIX/drive_c/windows/system32/gecko"; then
         say "installing embedded HTML support..."
         fetch "$GECKO_URL-x86_64.msi" "$GECKO64_SHA256" "$tmp/gecko64.msi"
         fetch "$GECKO_URL-x86.msi" "$GECKO32_SHA256" "$tmp/gecko32.msi"
