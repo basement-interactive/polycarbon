@@ -57,6 +57,7 @@ check() {
 	bash -n polycarbon
 	python -m py_compile polycarbon-config.py
 	python -m py_compile polycarbon-tray.py
+	python -m py_compile polycarbon-progress.py
 	desktop-file-validate polycarbon.desktop polycarbon-config.desktop
 }
 
@@ -69,6 +70,7 @@ package() {
 	# are not running out of a source checkout.
 	install -Dm755 polycarbon-config.py "$pkgdir/usr/lib/$pkgname/polycarbon-config.py"
 	install -Dm755 polycarbon-tray.py "$pkgdir/usr/lib/$pkgname/polycarbon-tray.py"
+	install -Dm755 polycarbon-progress.py "$pkgdir/usr/lib/$pkgname/polycarbon-progress.py"
 
 	# The MIME handler entry is NoDisplay; the settings entry is the visible one.
 	# Neither is followed by an update-desktop-database or update-mime-database
