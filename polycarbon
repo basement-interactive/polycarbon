@@ -965,6 +965,35 @@ apply_prefix_tweaks() {
     logmsg "prefix tweaks applied: focus, dotfiles in file dialogs, links open on the Linux desktop"
 }
 
+# mscoree.dll is the shim every .NET binary loads before anything else. It is a
+# Wine builtin, but the stub that resolves it lives in the prefix — and
+# winetricks' remove_mono, which its dotnet verbs run as a prerequisite, deletes
+# it. That leaves a prefix looking entirely healthy: the runtime is installed,
+# registered in HKLM and listed by `dotnet --list-runtimes`, and yet no .NET
+# program can start. It surfaces only as
+#   err:module:fixup_imports_ilonly mscoree.dll not found,
+#   IL-only binary "System.Runtime.dll" cannot be loaded
+# deep in a program's own output, so it reads to the user as ".NET is missing".
+#
+# Reinstalling wine-mono does NOT restore it — mscoree is Wine's, not mono's.
+# Only a prefix update recreates the stub.
+repair_dotnet_shim() {
+    [ -f "$WINEPREFIX/drive_c/windows/system32/mscoree.dll" ] && return 0
+    say "restoring the .NET loader..."
+    logmsg "mscoree.dll is missing — updating the prefix to restore it"
+    # Deliberately NOT _silent_wineboot: that runs with mscoree DISABLED to keep
+    # mono's installer quiet, and a disabled mscoree is precisely the stub this
+    # needs wineboot to create.
+    env -u DISPLAY -u WAYLAND_DISPLAY "$RUNNER_DIR/bin/wineboot" -u >>"$LOG" 2>&1
+    "$RUNNER_DIR/bin/wineserver" -w 2>/dev/null
+    if [ -f "$WINEPREFIX/drive_c/windows/system32/mscoree.dll" ]; then
+        logmsg "mscoree.dll restored"
+    else
+        logmsg "mscoree.dll still missing after a prefix update"
+    fi
+    return 0
+}
+
 init_prefix() {
     if [ -f "$WINEPREFIX/system.reg" ]; then
         # Existing prefix, but the runtime just changed under it — migrate the
@@ -1374,6 +1403,7 @@ ensure_ready() {
         install_components
         link_filesystem   # cheap + idempotent; also upgrades pre-existing prefixes
         install_bindings
+        repair_dotnet_shim
         apply_prefix_tweaks
         sync_dpi
     } 9>&-
