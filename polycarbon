@@ -1202,14 +1202,27 @@ ensure_ready() {
     # forces the update check past its daily throttle (the user asked now).
     exec 9> "$BASE/.setup.lock"
     flock 9
-    install_runner
-    check_runner_update "${1:-}"
-    init_prefix
-    install_components
-    link_filesystem   # cheap + idempotent; also upgrades pre-existing prefixes
-    install_bindings
-    apply_prefix_tweaks
-    sync_dpi
+
+    # Everything below starts Wine, and Wine's session daemons — wineserver,
+    # services.exe, plugplay.exe, explorer.exe, and any Windows service an app
+    # installed — outlive the launch that spawned them BY DESIGN. A plain
+    # `exec 9>` fd is inherited by every one of them, so those daemons kept
+    # holding this lock long after polycarbon exited, and every later launch
+    # blocked on flock forever with no output: the program simply never started.
+    # Closing fd 9 for the guarded body means the daemons never receive it.
+    # bash saves and restores the descriptor around a compound-command
+    # redirection, so the shell itself keeps the lock for the whole block.
+    {
+        install_runner
+        check_runner_update "${1:-}"
+        init_prefix
+        install_components
+        link_filesystem   # cheap + idempotent; also upgrades pre-existing prefixes
+        install_bindings
+        apply_prefix_tweaks
+        sync_dpi
+    } 9>&-
+
     flock -u 9
     exec 9>&-
 }
