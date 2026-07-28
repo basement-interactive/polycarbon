@@ -51,7 +51,7 @@ RUNNER_CHECK_SECONDS=86400
 COMPONENTS_VER="2026-07-28c"
 # The winetricks runtime-library layer, tracked separately so its verb set
 # can grow without re-running the heavier component install
-BINDINGS_VER="2026-07-28"
+BINDINGS_VER="2026-07-29"
 # Ceiling for a single winetricks verb. Generous enough for msxml3, the
 # expensive one at ~904 MB on a slow link, and short enough that a stuck
 # installer does not hold a launch open indefinitely.
@@ -74,12 +74,21 @@ WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312
 # current). Everything listed below is media="download" in the pinned winetricks
 # and declares no conflicts, so the whole set installs unattended.
 #
-# A verb being media="download" and conflict-free is NOT enough on its own: some
-# verbs pull others in with w_call, and that pulls their cost and their failure
-# modes in with them. xna40 was added here and then removed for exactly that —
-# it w_calls dotnet40, whose installer is the slow, hang-prone kind this list is
-# supposed to avoid, and it wedged a launch for minutes with no output. Check
-# `load_<verb>` for w_call before adding anything.
+# A verb being media="download" and conflict-free is NOT enough on its own.
+#
+# Some verbs pull others in with w_call, and that pulls their cost and their
+# failure modes in with them. xna40 was added here and then removed for exactly
+# that — it w_calls dotnet40, whose installer is the slow, hang-prone kind this
+# list is supposed to avoid, and it wedged a launch for minutes with no output.
+#
+# And some verbs no longer have a live source. msxml4 and vb6run were added and
+# then removed because their installers are gone from the vendor and winetricks
+# now fetches them from web.archive.org, which rate-limits: msxml4 failed with
+# HTTP 429 on a real setup, and a verb that cannot download is a verb that fails
+# on every launch forever, since the ledger only records successes.
+#
+# So before adding anything: check `load_<verb>` for w_call, and check the
+# w_download host is a vendor that still serves the file.
 #
 # Also excluded, checked against the pinned winetricks rather than assumed:
 # dxvk (this installs DXVK from upstream itself — the verb would overwrite those
@@ -107,7 +116,7 @@ WINETRICKS_SHA256="431f82fc74000e6c864409f1d8fb495d696c03928808e3e8acffc45179312
 # leaves it in ~/.cache/winetricks. It earns its place — plenty of older software
 # and installers require MSXML 3 and Wine's builtin isn't always enough — but
 # drop it here if a lean first run matters more. The other 15 total under 200 MB.
-WINETRICKS_VERBS="corefonts tahoma vcrun2022 vcrun2013 vcrun2012 vcrun2010 vcrun2008 vcrun2005 vcrun2003 vcrun6 mfc140 vb6run d3dcompiler_47 d3dcompiler_43 d3dx9 d3dx10 d3dx11_43 d3dx11_42 msxml3 msxml4 msxml6 wsh57 physx"
+WINETRICKS_VERBS="corefonts tahoma vcrun2022 vcrun2013 vcrun2012 vcrun2010 vcrun2008 vcrun2005 vcrun2003 vcrun6 mfc140 d3dcompiler_47 d3dcompiler_43 d3dx9 d3dx10 d3dx11_43 d3dx11_42 msxml3 msxml6 wsh57 physx"
 DXVK_VER="3.0.2"
 DXVK_URL="https://github.com/doitsujin/dxvk/releases/download/v${DXVK_VER}/dxvk-${DXVK_VER}.tar.gz"
 DXVK_SHA256="9c538924110a7cdef871ca36dee218c0774124374ffdeb38af4b76be55bdf7c2"
@@ -1097,11 +1106,18 @@ install_bindings() {
         else
             # 124 is timeout's own "deadline hit", worth distinguishing from a
             # verb that simply failed.
+            # These go to the progress window's DETAIL line, not through say():
+            # say() sets the current STEP, so a skipped verb replaced "installing
+            # runtime libraries" with "(msxml4 skipped)" and the window then
+            # reported a failure as the thing it was doing.
             if [ $? -eq 124 ]; then
-                say "    ($verb timed out after $BINDINGS_VERB_TIMEOUT — will retry on a later setup)"
+                [ "${SETUP_MODE:-}" = 1 ] && echo "    ($verb timed out — will retry on a later setup)"
+                progress_detail "$verb timed out — will retry later"
                 logmsg "winetricks verb $verb exceeded $BINDINGS_VERB_TIMEOUT and was stopped"
             else
-                say "    ($verb skipped — will retry on a later setup)"
+                [ "${SETUP_MODE:-}" = 1 ] && echo "    ($verb skipped — will retry on a later setup)"
+                progress_detail "$verb skipped — will retry later"
+                logmsg "winetricks verb $verb failed — will retry on a later setup"
             fi
         fi
     done
